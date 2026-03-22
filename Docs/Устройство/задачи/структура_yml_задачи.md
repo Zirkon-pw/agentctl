@@ -18,7 +18,9 @@ status: draft
 agent: claude
 
 prompt_templates:
-  - clarify-then-implement
+  builtin:
+    - clarify_if_needed
+  custom: []
 
 scope:
   allowed_paths:
@@ -44,11 +46,18 @@ constraints:
   require_tests: true
 
 interaction:
-  mode: two_stage
-  clarification:
-    required: true
-    max_questions: 5
-    block_execution_until_answers: true
+  clarification_strategy: by_yml_files
+
+clarifications:
+  pending_request: null
+  attached: []
+
+runtime:
+  max_execution_minutes: 45
+  heartbeat_interval_sec: 5
+  graceful_stop_timeout_sec: 20
+  allow_pause: true
+  allow_force_kill: true
 
 validation:
   commands:
@@ -74,23 +83,50 @@ validation:
 
 Текущий этап жизненного цикла задачи. На момент создания обычно `draft`.
 
+Рекомендуемый набор значений:
+
+- `draft`
+- `queued`
+- `preparing_context`
+- `running`
+- `needs_clarification`
+- `ready_to_resume`
+- `paused`
+- `stopping`
+- `stopped`
+- `killed`
+- `validating`
+- `review`
+- `completed`
+- `failed`
+- `rejected`
+- `canceled`
+
 ### `agent`
 
 Идентификатор исполнителя, который будет использоваться для run, например `claude`, `codex` или `qwen`.
 
 ## Блок `prompt_templates`
 
-Список prompt templates, подключенных к задаче. Эти шаблоны задают режим поведения агента поверх самой постановки.
+Список шаблонов промпта, подключенных к задаче. Эти шаблоны задают режим поведения агента поверх самой постановки.
 
 Пример:
 
 ```yaml
 prompt_templates:
-  - clarify-then-implement
-  - strict-executor
+  builtin:
+    - clarify_if_needed
+    - strict_executor
+  custom:
+    - custom_backend_guard
 ```
 
-Через этот блок задача может явно требовать, чтобы агент сначала задавал вопросы, строил план или работал в reviewer-режиме.
+Через этот блок задача может явно требовать, чтобы агент:
+
+- запросил уточнение по задаче;
+- сначала построил план;
+- работал в строгом режиме;
+- ограничился review или исследованием.
 
 ## Блок `scope`
 
@@ -163,25 +199,58 @@ scope:
 
 ## Блок `interaction`
 
-`interaction` задает или переопределяет сценарий выполнения задачи. Чаще всего этот блок формируется на основе prompt template, но при необходимости может содержать task-specific override.
+`interaction` задает или переопределяет сценарий выполнения задачи. Чаще всего этот блок формируется на основе шаблона промпта, но при необходимости может содержать task-specific override.
 
 Пример:
 
 ```yaml
 interaction:
-  mode: two_stage
-  clarification:
-    required: true
-    max_questions: 5
-    block_execution_until_answers: true
+  clarification_strategy: by_yml_files
 ```
 
 Через него удобно фиксировать:
 
-- одноэтапный или двухэтапный режим;
-- обязательность уточняющих вопросов;
-- максимально допустимое число вопросов;
-- запрет на выполнение до получения ответов.
+- что уточнение оформляется отдельными `.yml` файлами;
+- что задача может быть возвращена в работу после прикрепления clarification file;
+- что поведение исполнения определяется шаблонами, а не ручными чат-командами.
+
+## Блок `clarifications`
+
+`clarifications` хранит ссылки на отдельные `.yml`-уточнения по задаче.
+
+Пример:
+
+```yaml
+clarifications:
+  pending_request: .agentctl/clarifications/TASK-001/clarification_request_001.yml
+  attached:
+    - .agentctl/clarifications/TASK-001/clarification_001.yml
+```
+
+Этот блок нужен, чтобы уточнения были отделены от основной задачи, но оставались частью воспроизводимого task flow.
+
+## Блок `runtime`
+
+`runtime` задает task-specific правила наблюдения и управления уже существующей задачей во время исполнения.
+
+Пример:
+
+```yaml
+runtime:
+  max_execution_minutes: 45
+  heartbeat_interval_sec: 5
+  graceful_stop_timeout_sec: 20
+  allow_pause: true
+  allow_force_kill: true
+```
+
+Через него удобно задавать:
+
+- ожидаемый таймаут исполнения;
+- частоту heartbeat;
+- время ожидания graceful stop;
+- можно ли паузить задачу;
+- разрешен ли force kill для конкретного task type.
 
 ## Блок `validation`
 
@@ -250,8 +319,10 @@ agent: claude
 mode: strict
 
 prompt_templates:
-  - clarify-then-implement
-  - strict-executor
+  builtin:
+    - clarify_if_needed
+    - strict_executor
+  custom: []
 
 scope:
   allowed_paths:
@@ -286,11 +357,18 @@ constraints:
   require_migration_review: true
 
 interaction:
-  mode: two_stage
-  clarification:
-    required: true
-    max_questions: 5
-    block_execution_until_answers: true
+  clarification_strategy: by_yml_files
+
+clarifications:
+  pending_request: null
+  attached: []
+
+runtime:
+  max_execution_minutes: 45
+  heartbeat_interval_sec: 5
+  graceful_stop_timeout_sec: 20
+  allow_pause: true
+  allow_force_kill: true
 
 validation:
   commands:
@@ -312,11 +390,12 @@ result:
 
 ## Что важно зафиксировать в любой задаче
 
-Независимо от размера схемы, task YML должен отвечать на пять вопросов:
+Независимо от размера схемы, task YML должен отвечать на семь вопросов:
 
 1. Что именно нужно сделать.
 2. Где это можно делать.
 3. Какие правила нужно соблюдать.
-4. Как должен вести себя агент до начала реализации.
-5. Что нужно прочитать перед работой.
-6. Как проверить и принять результат.
+4. Какие встроенные или пользовательские шаблоны поведения подключены.
+5. Нужны ли отдельные `.yml`-уточнения по задаче.
+6. Что нужно прочитать перед работой.
+7. Как проверить и принять результат.
