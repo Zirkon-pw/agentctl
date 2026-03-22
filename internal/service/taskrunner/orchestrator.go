@@ -2,40 +2,26 @@ package taskrunner
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/docup/agentctl/internal/config/loader"
-	"github.com/docup/agentctl/internal/core/run"
 	rt "github.com/docup/agentctl/internal/core/runtime"
 	"github.com/docup/agentctl/internal/core/task"
 	"github.com/docup/agentctl/internal/infra/events"
-	"github.com/docup/agentctl/internal/infra/executor"
 	"github.com/docup/agentctl/internal/infra/fsstore"
 	infrart "github.com/docup/agentctl/internal/infra/runtime"
-	"github.com/docup/agentctl/internal/service/contextpack"
-	"github.com/docup/agentctl/internal/service/prompting"
-	"github.com/docup/agentctl/internal/service/validationrunner"
 )
 
-// Orchestrator coordinates the full task execution pipeline.
+// Orchestrator coordinates task execution, control and routing around the stage-based supervisor.
 type Orchestrator struct {
-	taskStore      *fsstore.TaskStore
-	runStore       *fsstore.RunStore
-	registry       *infrart.Registry
-	heartbeatMgr   *infrart.HeartbeatManager
-	eventSink      *events.Sink
-	contextBuilder *contextpack.Builder
-	promptBuilder  *prompting.Builder
-	executor       *executor.AgentExecutor
-	validator      *validationrunner.Runner
-	config         *loader.ProjectConfig
-	agentctlDir    string
-	projectRoot    string
+	taskStore  *fsstore.TaskStore
+	runStore   *fsstore.RunStore
+	registry   *infrart.Registry
+	eventSink  *events.Sink
+	config     *loader.ProjectConfig
+	supervisor *TaskSupervisor
 }
 
 // NewOrchestrator creates a task runner orchestrator.
@@ -43,33 +29,21 @@ func NewOrchestrator(
 	taskStore *fsstore.TaskStore,
 	runStore *fsstore.RunStore,
 	registry *infrart.Registry,
-	heartbeatMgr *infrart.HeartbeatManager,
 	eventSink *events.Sink,
-	contextBuilder *contextpack.Builder,
-	promptBuilder *prompting.Builder,
-	exec *executor.AgentExecutor,
-	validator *validationrunner.Runner,
 	config *loader.ProjectConfig,
-	agentctlDir string,
-	projectRoot string,
+	supervisor *TaskSupervisor,
 ) *Orchestrator {
 	return &Orchestrator{
-		taskStore:      taskStore,
-		runStore:       runStore,
-		registry:       registry,
-		heartbeatMgr:   heartbeatMgr,
-		eventSink:      eventSink,
-		contextBuilder: contextBuilder,
-		promptBuilder:  promptBuilder,
-		executor:       exec,
-		validator:      validator,
-		config:         config,
-		agentctlDir:    agentctlDir,
-		projectRoot:    projectRoot,
+		taskStore:  taskStore,
+		runStore:   runStore,
+		registry:   registry,
+		eventSink:  eventSink,
+		config:     config,
+		supervisor: supervisor,
 	}
 }
 
-// Run executes the full task pipeline.
+// Run executes or continues the stage-based pipeline for a task.
 func (o *Orchestrator) Run(ctx context.Context, taskID string) error {
 	t, err := o.taskStore.Load(taskID)
 	if err != nil {
@@ -86,170 +60,217 @@ func (o *Orchestrator) Run(ctx context.Context, taskID string) error {
 		}
 	}
 
-	// Transition to queued
 	if t.Status == task.StatusDraft || t.Status == task.StatusReadyToResume ||
-		t.Status == task.StatusPaused || t.Status == task.StatusStopped || t.Status == task.StatusKilled {
-		if err := t.TransitionTo(task.StatusQueued); err != nil {
-			return fmt.Errorf("cannot run task: %w", err)
+		t.Status == task.StatusRejected || t.Status == task.StatusFailed ||
+		t.Status == task.StatusPaused || t.Status == task.StatusHandoffPending ||
+		(t.Status == task.StatusWaitingClarification && t.Clarifications.PendingRequest == nil) {
+		t.Status = task.StatusQueued
+		t.UpdatedAt = time.Now()
+		if err := o.taskStore.Save(t); err != nil {
+			return err
 		}
-		o.taskStore.Save(t)
 	}
 
 	o.eventSink.Emit(taskID, "", "queued", "")
+	_, err = o.supervisor.Run(ctx, t)
+	return err
+}
 
-	// Prepare context
-	if err := t.TransitionTo(task.StatusPreparingContext); err != nil {
-		return err
-	}
-	o.taskStore.Save(t)
-	o.eventSink.Emit(taskID, "", "preparing_context", "")
-
-	contextDir, err := o.contextBuilder.Build(t)
-	if err != nil {
-		t.TransitionTo(task.StatusFailed)
-		o.taskStore.Save(t)
-		return fmt.Errorf("building context: %w", err)
-	}
-	o.eventSink.Emit(taskID, "", "context_prepared", contextDir)
-
-	// Create run
-	runID, err := o.runStore.NextRunID(taskID)
+// Resume resumes a paused live session or continues the next blocked stage.
+func (o *Orchestrator) Resume(ctx context.Context, taskID string) error {
+	active, err := o.registry.LoadActiveRun(taskID)
 	if err != nil {
 		return err
 	}
-	runDir := o.runStore.RunDir(taskID, runID)
+	if active != nil {
+		if !active.Capabilities.SupportsResume {
+			return fmt.Errorf("agent %s does not support resume", active.Agent)
+		}
+		return o.registry.AppendCommand(rt.ProtocolCommand{
+			SessionID: active.RunID,
+			TaskID:    taskID,
+			RunID:     active.RunID,
+			StageID:   active.StageID,
+			Seq:       time.Now().UnixNano(),
+			Timestamp: time.Now(),
+			Type:      rt.CommandTypeResume,
+		})
+	}
+	return o.Run(ctx, taskID)
+}
 
-	// Build prompt
-	promptContent, err := o.promptBuilder.BuildPrompt(t, contextDir, runDir)
+// Stop sends a graceful cancel command to the live adapter session.
+func (o *Orchestrator) Stop(taskID string) error {
+	active, err := o.registry.LoadActiveRun(taskID)
 	if err != nil {
-		t.TransitionTo(task.StatusFailed)
-		o.taskStore.Save(t)
-		return fmt.Errorf("building prompt: %w", err)
-	}
-
-	// Create run entity
-	r := &run.Run{
-		ID:               runID,
-		TaskID:           taskID,
-		Status:           run.RunStatusPending,
-		Agent:            t.Agent,
-		PromptFile:       filepath.Join(runDir, "prompt.md"),
-		TemplateLockFile: filepath.Join(runDir, "prompt_template_lock.yml"),
-		Clarifications:   t.Clarifications.Attached,
-		CreatedAt:        time.Now(),
-	}
-
-	// Transition to running
-	if err := t.TransitionTo(task.StatusRunning); err != nil {
 		return err
 	}
-	o.taskStore.Save(t)
-
-	// Register in runtime
-	activeRun := rt.ActiveRun{
+	if active == nil {
+		return fmt.Errorf("task %s is not running", taskID)
+	}
+	if !active.Capabilities.SupportsCancel {
+		return fmt.Errorf("agent %s does not support cancel", active.Agent)
+	}
+	o.eventSink.Emit(taskID, active.RunID, "cancel_requested", "")
+	return o.registry.AppendCommand(rt.ProtocolCommand{
+		SessionID: active.RunID,
 		TaskID:    taskID,
-		RunID:     runID,
-		Agent:     t.Agent,
-		StartedAt: time.Now(),
-	}
-	if err := o.registry.RegisterRun(activeRun); err != nil {
-		return fmt.Errorf("registering run: %w", err)
-	}
-	o.eventSink.Emit(taskID, runID, "running", fmt.Sprintf("agent=%s", t.Agent))
+		RunID:     active.RunID,
+		StageID:   active.StageID,
+		Seq:       time.Now().UnixNano(),
+		Timestamp: time.Now(),
+		Type:      rt.CommandTypeCancel,
+	})
+}
 
-	// Start heartbeat goroutine
-	hbCtx, hbCancel := context.WithCancel(ctx)
-	defer hbCancel()
-	go o.heartbeatLoop(hbCtx, taskID, runID, time.Duration(t.Runtime.HeartbeatIntervalSec)*time.Second)
-
-	// Execute agent
-	result, err := o.executor.ExecuteWithPromptFile(ctx, t.Agent, promptContent, o.projectRoot, taskID, runID, o.agentctlDir)
-	hbCancel()
-
+// Kill force-kills a live adapter process group.
+func (o *Orchestrator) Kill(taskID string) error {
+	active, err := o.registry.LoadActiveRun(taskID)
 	if err != nil {
-		slog.Error("agent execution failed", "task", taskID, "error", err)
-		r.TransitionTo(run.RunStatusFailed)
-		o.runStore.Save(r)
-		o.registry.UnregisterRun(taskID, runID)
-		t.TransitionTo(task.StatusFailed)
-		o.taskStore.Save(t)
-		o.eventSink.Emit(taskID, runID, "failed", err.Error())
-		return fmt.Errorf("executing agent: %w", err)
+		return err
 	}
-
-	r.MarkStarted(result.PID)
-	r.MarkFinished(result.ExitCode, "completed")
-	o.runStore.Save(r)
-
-	// Save stdout/stderr as logs
-	o.runStore.WriteArtifact(taskID, runID, "logs.txt", []byte(result.Stdout+"\n---STDERR---\n"+result.Stderr))
-
-	o.eventSink.Emit(taskID, runID, "execution_completed", fmt.Sprintf("exit_code=%d", result.ExitCode))
-
-	// Unregister from runtime
-	o.registry.UnregisterRun(taskID, runID)
-
-	// Check if agent requested clarification
-	clarReqPath := filepath.Join(runDir, "clarification_request.yml")
-	if _, err := os.Stat(clarReqPath); err == nil {
-		t.TransitionTo(task.StatusNeedsClarification)
-		o.taskStore.Save(t)
-		o.eventSink.Emit(taskID, runID, "needs_clarification", "")
-		return nil
+	if active == nil {
+		return fmt.Errorf("task %s is not running", taskID)
 	}
-
-	// Run validation
-	if len(t.Validation.Commands) > 0 {
-		if err := t.TransitionTo(task.StatusValidating); err != nil {
+	if active.ProcessGroupID > 0 {
+		if err := syscall.Kill(-active.ProcessGroupID, syscall.SIGKILL); err != nil {
 			return err
 		}
-		o.taskStore.Save(t)
-		o.eventSink.Emit(taskID, runID, "validating", "")
-
-		report, err := o.validator.Validate(ctx, t, r)
-		if err != nil {
-			slog.Error("validation failed", "task", taskID, "error", err)
-		}
-
-		// Save validation report
-		reportData, _ := json.MarshalIndent(report, "", "  ")
-		o.runStore.WriteArtifact(taskID, runID, "validation.json", reportData)
-
-		if report != nil && !report.AllPassed {
-			o.eventSink.Emit(taskID, runID, "validation_failed", fmt.Sprintf("retries=%d/%d", report.TotalRetries, report.MaxRetries))
-			if report.CanRetry() && t.Validation.Mode == task.ValidationModeFull {
-				// Will be handled by validation runner retry loop
-				slog.Info("validation failed, retries exhausted or mode is simple", "task", taskID)
-			}
-			t.TransitionTo(task.StatusFailed)
-			o.taskStore.Save(t)
-			return nil
-		}
-
-		o.eventSink.Emit(taskID, runID, "validation_passed", "")
 	}
-
-	// Move to review
-	if err := t.TransitionTo(task.StatusReview); err != nil {
+	if err := o.registry.AppendCommand(rt.ProtocolCommand{
+		SessionID: active.RunID,
+		TaskID:    taskID,
+		RunID:     active.RunID,
+		StageID:   active.StageID,
+		Seq:       time.Now().UnixNano(),
+		Timestamp: time.Now(),
+		Type:      rt.CommandTypeKill,
+	}); err != nil {
 		return err
 	}
-	o.taskStore.Save(t)
-	o.eventSink.Emit(taskID, runID, "review", "awaiting human review")
-
+	t, err := o.taskStore.Load(taskID)
+	if err == nil {
+		t.Status = task.StatusCanceled
+		t.UpdatedAt = time.Now()
+		_ = o.taskStore.Save(t)
+	}
+	o.eventSink.Emit(taskID, active.RunID, "killed", "")
 	return nil
 }
 
-func (o *Orchestrator) heartbeatLoop(ctx context.Context, taskID, runID string, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			o.heartbeatMgr.Write(taskID, runID)
-		}
+// Pause requests a live adapter stage to pause.
+func (o *Orchestrator) Pause(taskID string) error {
+	t, err := o.taskStore.Load(taskID)
+	if err != nil {
+		return err
 	}
+	if !t.Runtime.AllowPause {
+		return fmt.Errorf("pause is not allowed for task %s", taskID)
+	}
+
+	active, err := o.registry.LoadActiveRun(taskID)
+	if err != nil {
+		return err
+	}
+	if active == nil {
+		return fmt.Errorf("task %s is not running", taskID)
+	}
+	if !active.Capabilities.SupportsPause || !active.Capabilities.SupportsResume {
+		return fmt.Errorf("agent %s does not support pause/resume", active.Agent)
+	}
+	o.eventSink.Emit(taskID, active.RunID, "pause_requested", "")
+	return o.registry.AppendCommand(rt.ProtocolCommand{
+		SessionID: active.RunID,
+		TaskID:    taskID,
+		RunID:     active.RunID,
+		StageID:   active.StageID,
+		Seq:       time.Now().UnixNano(),
+		Timestamp: time.Now(),
+		Type:      rt.CommandTypePause,
+	})
+}
+
+// Cancel cancels a task that is not actively running.
+func (o *Orchestrator) Cancel(taskID string) error {
+	if active, err := o.registry.LoadActiveRun(taskID); err == nil && active != nil {
+		return fmt.Errorf("cannot cancel running task %s; use stop instead", taskID)
+	}
+	t, err := o.taskStore.Load(taskID)
+	if err != nil {
+		return err
+	}
+	if err := t.TransitionTo(task.StatusCanceled); err != nil {
+		return fmt.Errorf("cannot cancel task: %w", err)
+	}
+	if err := o.taskStore.Save(t); err != nil {
+		return err
+	}
+	o.eventSink.Emit(taskID, "", "canceled", "")
+	return nil
+}
+
+// Accept marks a reviewed task as completed.
+func (o *Orchestrator) Accept(taskID string) error {
+	t, err := o.taskStore.Load(taskID)
+	if err != nil {
+		return err
+	}
+	if err := t.TransitionTo(task.StatusCompleted); err != nil {
+		return fmt.Errorf("cannot accept task: %w", err)
+	}
+	if err := o.taskStore.Save(t); err != nil {
+		return err
+	}
+	o.eventSink.Emit(taskID, "", "completed", "accepted")
+	return nil
+}
+
+// Reject marks a reviewed task as rejected.
+func (o *Orchestrator) Reject(taskID, reason string) error {
+	t, err := o.taskStore.Load(taskID)
+	if err != nil {
+		return err
+	}
+	if err := t.TransitionTo(task.StatusRejected); err != nil {
+		return fmt.Errorf("cannot reject task: %w", err)
+	}
+	if err := o.taskStore.Save(t); err != nil {
+		return err
+	}
+	o.eventSink.Emit(taskID, "", "rejected", reason)
+	return nil
+}
+
+// Route schedules a stage-level handoff when a session exists, or updates the draft task agent otherwise.
+func (o *Orchestrator) Route(taskID, agentID, reason string) error {
+	t, err := o.taskStore.Load(taskID)
+	if err != nil {
+		return err
+	}
+	session, err := o.runStore.LatestSession(taskID)
+	if err == nil && session != nil && session.Status != rt.SessionStatusCompleted && session.Status != rt.SessionStatusCanceled {
+		session.PendingHandoff = &rt.PendingHandoff{
+			NextAgentID: agentID,
+			Reason:      reason,
+			RequestedAt: time.Now(),
+		}
+		session.Status = rt.SessionStatusHandoffPending
+		session.UpdatedAt = time.Now()
+		t.Status = task.StatusHandoffPending
+		t.UpdatedAt = time.Now()
+		if err := o.runStore.SaveSession(session); err != nil {
+			return err
+		}
+		if err := o.taskStore.Save(t); err != nil {
+			return err
+		}
+		o.eventSink.Emit(taskID, session.ID, "handoff_pending", agentID)
+		return nil
+	}
+
+	t.Agent = agentID
+	t.UpdatedAt = time.Now()
+	return o.taskStore.Save(t)
 }
 
 func (o *Orchestrator) validateAndNormalizeForRun(t *task.Task) (bool, error) {
@@ -263,104 +284,11 @@ func (o *Orchestrator) validateAndNormalizeForRun(t *task.Task) (bool, error) {
 		t.PromptTemplates.Builtin = []string{o.config.Prompting.DefaultTemplate}
 		changed = true
 	}
-
 	if t.Title == "" {
 		return changed, fmt.Errorf("task %s is missing required field: title", t.ID)
 	}
 	if t.Goal == "" {
 		return changed, fmt.Errorf("task %s is missing required field: goal", t.ID)
 	}
-
 	return changed, nil
-}
-
-// Stop sends a graceful stop signal to a running task.
-func (o *Orchestrator) Stop(taskID string) error {
-	t, err := o.taskStore.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if err := t.TransitionTo(task.StatusStopping); err != nil {
-		return fmt.Errorf("cannot stop task: %w", err)
-	}
-	o.taskStore.Save(t)
-	o.registry.WriteSignal(taskID, rt.SignalStop)
-	o.eventSink.Emit(taskID, "", "stopping", "graceful stop requested")
-	return nil
-}
-
-// Kill sends a forced kill signal.
-func (o *Orchestrator) Kill(taskID string) error {
-	t, err := o.taskStore.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if err := t.TransitionTo(task.StatusKilled); err != nil {
-		return fmt.Errorf("cannot kill task: %w", err)
-	}
-	o.taskStore.Save(t)
-	o.registry.WriteSignal(taskID, rt.SignalKill)
-	o.registry.UnregisterRun(taskID, "")
-	o.eventSink.Emit(taskID, "", "killed", "forced kill")
-	return nil
-}
-
-// Pause sends a pause signal.
-func (o *Orchestrator) Pause(taskID string) error {
-	t, err := o.taskStore.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if !t.Runtime.AllowPause {
-		return fmt.Errorf("pause is not allowed for task %s", taskID)
-	}
-	if err := t.TransitionTo(task.StatusPausing); err != nil {
-		return fmt.Errorf("cannot pause task: %w", err)
-	}
-	o.taskStore.Save(t)
-	o.registry.WriteSignal(taskID, rt.SignalPause)
-	o.eventSink.Emit(taskID, "", "pausing", "pause requested")
-	return nil
-}
-
-// Cancel cancels a task that is not actively running.
-func (o *Orchestrator) Cancel(taskID string) error {
-	t, err := o.taskStore.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if err := t.TransitionTo(task.StatusCanceled); err != nil {
-		return fmt.Errorf("cannot cancel task: %w", err)
-	}
-	o.taskStore.Save(t)
-	o.eventSink.Emit(taskID, "", "canceled", "")
-	return nil
-}
-
-// Accept marks a task as completed after review.
-func (o *Orchestrator) Accept(taskID string) error {
-	t, err := o.taskStore.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if err := t.TransitionTo(task.StatusCompleted); err != nil {
-		return fmt.Errorf("cannot accept task: %w", err)
-	}
-	o.taskStore.Save(t)
-	o.eventSink.Emit(taskID, "", "completed", "accepted")
-	return nil
-}
-
-// Reject marks a task as rejected after review.
-func (o *Orchestrator) Reject(taskID, reason string) error {
-	t, err := o.taskStore.Load(taskID)
-	if err != nil {
-		return err
-	}
-	if err := t.TransitionTo(task.StatusRejected); err != nil {
-		return fmt.Errorf("cannot reject task: %w", err)
-	}
-	o.taskStore.Save(t)
-	o.eventSink.Emit(taskID, "", "rejected", reason)
-	return nil
 }

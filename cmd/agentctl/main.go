@@ -63,7 +63,7 @@ func main() {
 		taskCmd.AddCommand(clitask.NewLogsCmd(app.RunStore, app.AgentctlDir))
 		taskCmd.AddCommand(clitask.NewEventsCmd(app.RuntimeMgr))
 		taskCmd.AddCommand(clitask.NewWatchCmd(app.InspectTask, app.RuntimeMgr))
-		taskCmd.AddCommand(clitask.NewRouteCmd(app.TaskStore))
+		taskCmd.AddCommand(clitask.NewRouteCmd(app.Orchestrator))
 		rootCmd.AddCommand(taskCmd)
 
 		// Template commands

@@ -1,21 +1,22 @@
 # agentctl
 
-CLI-инструмент для управления инженерными задачами через AI-агентов. Заменяет чат-взаимодействие с LLM на структурированный pipeline: создание задачи, сборка контекста, выполнение агентом, валидация, ревью.
+CLI-инструмент для управления инженерными задачами через AI-агентов. Заменяет чат-взаимодействие с LLM на структурированный pipeline: создание задачи, сборка контекста, stage-based выполнение агентом, валидация, reviewer-stage и review.
 
 ## Возможности
 
 - **Формализованные задачи** — YAML-спецификации с целью, скоупом, ограничениями и критериями валидации
 - **Шаблоны поведения** — 5 встроенных шаблонов (`clarify_if_needed`, `plan_before_execution`, `strict_executor`, `research_only`, `review_only`) + пользовательские
-- **Мульти-агентность** — поддержка Claude, Codex, Qwen через их CLI
-- **Уточнения** — структурированный YAML-flow вместо свободного чата
+- **Adapter runtime** — запуск внешних CLI-агентов через adapter wrappers с NDJSON-протоколом по stdio
+- **Stage/session модель** — `execute -> clarification -> validate_fix -> reviewer -> handoff` внутри одного session lifecycle
+- **Уточнения** — структурированный YAML-flow, который материализуется supervisor-ом из protocol events
 - **Валидация** — два режима: `simple` (pass/fail) и `full` (автоматическое исправление агентом, до N ретраев)
 - **Наблюдаемость** — `ps`, `inspect`, `logs`, `events`, `watch` для мониторинга выполнения
-- **Управление** — `stop`, `kill`, `pause`, `resume`, `cancel` для контроля запусков
+- **Управление** — `stop`, `kill`, `pause`, `resume`, `cancel` для контроля live-session и recovery
 
 ## Требования
 
 - Go 1.21+
-- Один из CLI-агентов: `claude`, `codex`, `qwen`
+- Внешний CLI-агент с adapter wrapper, который поддерживает machine-readable streaming mode
 
 ## Сборка
 
@@ -79,8 +80,8 @@ agentctl task reject TASK-001 --reason "не покрыто тестами"
 |---------|----------|
 | `task create` | Создать draft-задачу, в том числе пустую |
 | `task update` | Донастроить задачу в статусе draft |
-| `task run` | Запустить выполнение |
-| `task resume` | Возобновить после паузы/стопа/уточнения |
+| `task run` | Запустить или продолжить session pipeline |
+| `task resume` | Возобновить live pause или продолжить blocked session |
 | `task rerun` | Перезапустить задачу |
 | `task list` | Список всех задач |
 | `task inspect` | Детальная информация о задаче |
@@ -94,7 +95,7 @@ agentctl task reject TASK-001 --reason "не покрыто тестами"
 | `task cancel` | Отмена (для незапущенных) |
 | `task accept` | Принять результат |
 | `task reject` | Отклонить результат |
-| `task route` | Переназначить агента |
+| `task route` | Поставить handoff на другого агента |
 
 ### Шаблоны и уточнения
 
@@ -127,9 +128,30 @@ agentctl task reject TASK-001 --reason "не покрыто тестами"
 ├── guidelines/          # Гайдлайны проекта (Markdown)
 ├── clarifications/      # Файлы уточнений
 ├── context/             # Собранные контекст-паки
-├── runs/                # Артефакты выполнения
-├── runtime/             # Состояние активных запусков
+├── runs/                # Session directories, stage history, protocol.ndjson, artifacts.json
+├── runtime/             # Состояние активных session и control commands
 └── reviews/             # Решения по ревью
+```
+
+Типичный session layout:
+
+```text
+.agentctl/runs/TASK-001/RUN-001/
+├── metadata.json
+├── session.json
+├── protocol.ndjson
+├── artifacts.json
+├── summary.md
+├── diff.patch
+├── validation.json
+├── review_report.json
+└── stages/
+    ├── STAGE-001/
+    │   ├── stage_spec.json
+    │   ├── prompt.md
+    │   └── adapter.stderr.log
+    └── STAGE-002/
+        └── review_prompt.md
 ```
 
 ## Валидация
@@ -147,6 +169,20 @@ validation:
 
 - **simple** — команды выполняются, exit 0 = pass, иначе fail
 - **full** — при ошибке результат отправляется агенту на исправление, до `max_retries` попыток
+
+## Взаимодействие с агентом
+
+`agentctl` больше не запускает агент как одноразовую команду с одним `prompt` и финальным `stdout`.
+
+Теперь runtime работает так:
+
+1. Для задачи создается `RunSession`.
+2. Supervisor планирует следующий `stage`.
+3. Для stage пишется `stage_spec.json`.
+4. Adapter wrapper запускает внешний CLI-агент и общается с ним через NDJSON:
+   - `stdin` — control commands (`cancel`, `pause`, `resume`, `kill`, `ping`)
+   - `stdout` — protocol events (`hello`, `progress`, `artifact`, `clarification_requested`, `review_report`, `stage_completed` и т.д.)
+5. Supervisor пишет сырой поток в `protocol.ndjson`, поддерживает `artifacts.json`, обновляет `session.json` и materialize-ит YAML-файлы уточнений для пользователя.
 
 ## Создание и настройка задач
 
@@ -203,7 +239,7 @@ internal/
   app/                → use cases (command/query + DTO)
   core/               → доменная модель (task, run, template, clarification)
   service/            → сервисы оркестрации (taskrunner, validation, prompting)
-  infra/              → инфраструктура (fsstore, executor, runtime, events)
+  infra/              → инфраструктура (fsstore, runtime, events)
   config/             → конфигурация и встроенные шаблоны
   bootstrap/          → DI-wiring
 ```

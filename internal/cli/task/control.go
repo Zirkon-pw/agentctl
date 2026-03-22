@@ -75,14 +75,14 @@ func NewCancelCmd(orch *taskrunner.Orchestrator) *cobra.Command {
 func NewResumeCmd(runHandler *taskrunner.Orchestrator) *cobra.Command {
 	return &cobra.Command{
 		Use:   "resume <task-id>",
-		Short: "Resume a stopped/paused task or one with clarification attached",
+		Short: "Resume a live paused stage or continue a blocked session",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Printf("Resuming task %s...\n", args[0])
-			if err := runHandler.Run(cmd.Context(), args[0]); err != nil {
+			if err := runHandler.Resume(cmd.Context(), args[0]); err != nil {
 				return err
 			}
-			fmt.Printf("Task %s resumed and completed.\n", args[0])
+			fmt.Printf("Resume signal sent or pipeline continued for task %s.\n", args[0])
 			return nil
 		},
 	}

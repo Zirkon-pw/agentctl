@@ -65,11 +65,11 @@ Commands:
 ==================
 When a task has ambiguities, the agent can request clarification.
 
-1. Agent creates clarification_request.yml
-2. Task transitions to needs_clarification
-3. User fills answers in clarification file
-4. User attaches: agentctl clarification attach TASK-001 <path>
-5. Task transitions to ready_to_resume
+1. Adapter emits clarification_requested via NDJSON protocol
+2. Supervisor materializes clarification_request_*.yml
+3. Task transitions to waiting_clarification
+4. User fills answers in clarification file
+5. User attaches: agentctl clarification attach TASK-001 <path>
 6. Resume: agentctl task resume TASK-001`,
 
 	"validation": `Validation
@@ -93,13 +93,13 @@ Configure in task YAML:
 1. agentctl init                    — Initialize project
 2. agentctl task create             — Create a draft task
 3. agentctl task update TASK-001 ... — Fill in title, goal, scope, templates
-4. agentctl task run TASK-001       — Execute with agent
+4. agentctl task run TASK-001       — Start/continue a session pipeline
 5. agentctl task inspect TASK-001   — Check results
 6. agentctl task accept TASK-001    — Approve results
 
 With clarification:
 4. agentctl task run TASK-001
-5. (agent requests clarification)
+5. (adapter requests clarification)
 6. agentctl clarification show TASK-001
 7. (edit clarification YAML)
 8. agentctl clarification attach TASK-001 <path>

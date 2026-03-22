@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	rt "github.com/docup/agentctl/internal/core/runtime"
 	"gopkg.in/yaml.v3"
 )
 
@@ -63,17 +64,23 @@ type ArtifactsCfg struct {
 
 // AgentDef describes an available agent from agents.yaml.
 type AgentDef struct {
-	ID             string   `yaml:"id"`
-	Role           string   `yaml:"role"`
-	Specialization []string `yaml:"specialization"`
-	Strengths      []string `yaml:"strengths"`
-	Speed          string   `yaml:"speed"`
-	Cost           string   `yaml:"cost"`
-	ContextLimit   string   `yaml:"context_limit"`
-	Modes          []string `yaml:"modes"`
-	Tools          []string `yaml:"tools"`
-	Command        string   `yaml:"command"`
-	Args           []string `yaml:"args"`
+	ID              string                 `yaml:"id"`
+	Role            string                 `yaml:"role"`
+	Specialization  []string               `yaml:"specialization"`
+	Strengths       []string               `yaml:"strengths"`
+	Speed           string                 `yaml:"speed"`
+	Cost            string                 `yaml:"cost"`
+	ContextLimit    string                 `yaml:"context_limit"`
+	Modes           []string               `yaml:"modes"`
+	Tools           []string               `yaml:"tools"`
+	Command         string                 `yaml:"command"`
+	Args            []string               `yaml:"args"`
+	Transport       string                 `yaml:"transport"`
+	AdapterCommand  string                 `yaml:"adapter_command"`
+	AdapterArgs     []string               `yaml:"adapter_args"`
+	Capabilities    rt.AdapterCapabilities `yaml:"capabilities"`
+	ChildCLICommand string                 `yaml:"child_cli_command"`
+	ChildCLIArgs    []string               `yaml:"child_cli_args"`
 }
 
 // AgentsConfig wraps the list of agents.
@@ -197,6 +204,16 @@ func DefaultAgentsConfig() *AgentsConfig {
 				Tools:          []string{"filesystem", "git"},
 				Command:        "claude",
 				Args:           []string{"-p"},
+				Transport:      "ndjson_stdio",
+				AdapterCommand: "claude",
+				AdapterArgs:    []string{"-p"},
+				Capabilities: rt.AdapterCapabilities{
+					ProtocolVersion: "v1",
+					SupportsCancel:  true,
+					SupportsKill:    true,
+				},
+				ChildCLICommand: "claude",
+				ChildCLIArgs:    []string{"-p"},
 			},
 			{
 				ID:             "codex",
@@ -210,6 +227,16 @@ func DefaultAgentsConfig() *AgentsConfig {
 				Tools:          []string{"filesystem", "terminal"},
 				Command:        "codex",
 				Args:           []string{"-q"},
+				Transport:      "ndjson_stdio",
+				AdapterCommand: "codex",
+				AdapterArgs:    []string{"-q"},
+				Capabilities: rt.AdapterCapabilities{
+					ProtocolVersion: "v1",
+					SupportsCancel:  true,
+					SupportsKill:    true,
+				},
+				ChildCLICommand: "codex",
+				ChildCLIArgs:    []string{"-q"},
 			},
 			{
 				ID:             "qwen",
@@ -223,6 +250,16 @@ func DefaultAgentsConfig() *AgentsConfig {
 				Tools:          []string{"filesystem", "terminal"},
 				Command:        "qwen",
 				Args:           []string{},
+				Transport:      "ndjson_stdio",
+				AdapterCommand: "qwen",
+				AdapterArgs:    []string{},
+				Capabilities: rt.AdapterCapabilities{
+					ProtocolVersion: "v1",
+					SupportsCancel:  true,
+					SupportsKill:    true,
+				},
+				ChildCLICommand: "qwen",
+				ChildCLIArgs:    []string{},
 			},
 		},
 	}

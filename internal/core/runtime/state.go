@@ -13,11 +13,17 @@ const (
 
 // ActiveRun tracks a currently executing task run.
 type ActiveRun struct {
-	TaskID    string    `json:"task_id"`
-	RunID     string    `json:"run_id"`
-	Agent     string    `json:"agent"`
-	PID       int       `json:"pid"`
-	StartedAt time.Time `json:"started_at"`
+	TaskID         string              `json:"task_id"`
+	RunID          string              `json:"run_id"`
+	SessionID      string              `json:"session_id,omitempty"`
+	StageID        string              `json:"stage_id,omitempty"`
+	Agent          string              `json:"agent"`
+	Status         SessionStatus       `json:"status,omitempty"`
+	PID            int                 `json:"pid"`
+	ProcessGroupID int                 `json:"process_group_id,omitempty"`
+	StartedAt      time.Time           `json:"started_at"`
+	UpdatedAt      time.Time           `json:"updated_at,omitempty"`
+	Capabilities   AdapterCapabilities `json:"capabilities,omitempty"`
 }
 
 // Heartbeat holds the last heartbeat info for a running task.
@@ -38,6 +44,9 @@ type Event struct {
 	Timestamp time.Time `json:"ts"`
 	TaskID    string    `json:"task"`
 	RunID     string    `json:"run"`
+	SessionID string    `json:"session_id,omitempty"`
+	StageID   string    `json:"stage_id,omitempty"`
+	Sequence  int64     `json:"seq,omitempty"`
 	EventType string    `json:"event"`
 	Details   string    `json:"details,omitempty"`
 }

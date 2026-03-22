@@ -46,7 +46,7 @@ func TestInspectTask_Found(t *testing.T) {
 	if detail.ID != "TASK-001" {
 		t.Errorf("wrong ID: %s", detail.ID)
 	}
-	if detail.Status != "running" {
+	if detail.Status != "stage_running" {
 		t.Errorf("wrong status: %s", detail.Status)
 	}
 	if len(detail.Templates) != 3 {

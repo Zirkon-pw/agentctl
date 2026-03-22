@@ -51,8 +51,8 @@ func TestListTasks_Multiple(t *testing.T) {
 	for _, r := range results {
 		if r.ID == "TASK-002" {
 			found = true
-			if r.Status != "running" {
-				t.Errorf("expected running, got %s", r.Status)
+			if r.Status != "stage_running" {
+				t.Errorf("expected stage_running, got %s", r.Status)
 			}
 			if r.Agent != "codex" {
 				t.Errorf("expected codex, got %s", r.Agent)

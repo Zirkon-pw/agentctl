@@ -8,7 +8,6 @@ import (
 	"github.com/docup/agentctl/internal/app/command"
 	"github.com/docup/agentctl/internal/app/query"
 	"github.com/docup/agentctl/internal/infra/events"
-	"github.com/docup/agentctl/internal/infra/executor"
 	"github.com/docup/agentctl/internal/infra/fsstore"
 	infrart "github.com/docup/agentctl/internal/infra/runtime"
 	"github.com/docup/agentctl/internal/service/clarificationflow"
@@ -16,7 +15,6 @@ import (
 	"github.com/docup/agentctl/internal/service/prompting"
 	"github.com/docup/agentctl/internal/service/runtimecontrol"
 	"github.com/docup/agentctl/internal/service/taskrunner"
-	"github.com/docup/agentctl/internal/service/validationrunner"
 	"github.com/docup/agentctl/internal/service/workspace"
 )
 
@@ -72,18 +70,18 @@ func NewApp() (*App, error) {
 	registry := infrart.NewRegistry(agentctlDir)
 	heartbeatMgr := infrart.NewHeartbeatManager(agentctlDir)
 	eventSink := events.NewSink(filepath.Join(agentctlDir, "runtime"))
-	agentExec := executor.NewAgentExecutor(ws.Agents)
+	adapterRegistry := taskrunner.NewAgentAdapterRegistry(ws.Agents)
 
 	// Services
 	ctxBuilder := contextpack.NewBuilder(agentctlDir, projectRoot)
 	promptBuilder := prompting.NewBuilder(templateStore, agentctlDir)
-	validator := validationrunner.NewRunner(projectRoot, agentExec, runStore, agentctlDir)
+	supervisor := taskrunner.NewTaskSupervisor(
+		taskStore, runStore, clarStore, registry, heartbeatMgr, eventSink,
+		ctxBuilder, promptBuilder, ws.Config, adapterRegistry, projectRoot,
+	)
 
 	orchestrator := taskrunner.NewOrchestrator(
-		taskStore, runStore, registry, heartbeatMgr, eventSink,
-		ctxBuilder, promptBuilder, agentExec, validator,
-		ws.Config,
-		agentctlDir, projectRoot,
+		taskStore, runStore, registry, eventSink, ws.Config, supervisor,
 	)
 
 	clarMgr := clarificationflow.NewManager(taskStore, clarStore)
