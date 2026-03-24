@@ -78,6 +78,13 @@ func (c *CreateTask) Execute(req dto.CreateTaskRequest) (*task.Task, error) {
 		t.Scope.MustRead = append([]string(nil), req.Scope.MustRead...)
 	}
 
+	if t.Title == "" {
+		return nil, fmt.Errorf("title is required: use --title to provide a task title")
+	}
+	if t.Goal == "" {
+		return nil, fmt.Errorf("goal is required: use --goal to provide a task goal")
+	}
+
 	if err := c.taskStore.Create(t); err != nil {
 		return nil, fmt.Errorf("saving task: %w", err)
 	}

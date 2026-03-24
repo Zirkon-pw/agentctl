@@ -50,6 +50,13 @@ func (o *Orchestrator) Run(ctx context.Context, taskID string) error {
 		return err
 	}
 
+	if t.Status.IsTerminal() {
+		return fmt.Errorf("cannot run task %s: task is already %s", taskID, t.Status)
+	}
+	if t.Status == task.StatusStageRunning || t.Status == task.StatusQueued {
+		return fmt.Errorf("cannot run task %s: task is already in progress (status: %s)", taskID, t.Status)
+	}
+
 	changed, err := o.validateAndNormalizeForRun(t)
 	if err != nil {
 		return err
@@ -250,6 +257,9 @@ func (o *Orchestrator) validateAndNormalizeForRun(t *task.Task) (bool, error) {
 	}
 	if t.Goal == "" {
 		return changed, fmt.Errorf("task %s is missing required field: goal", t.ID)
+	}
+	if _, _, err := o.supervisor.drivers.Resolve(t.Agent); err != nil {
+		return changed, fmt.Errorf("task %s references unknown agent %q: %w", t.ID, t.Agent, err)
 	}
 	return changed, nil
 }

@@ -158,13 +158,11 @@ func TestBuild_MissingGuideline(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 
-	dir, err := builder.Build(tk)
-	if err != nil {
-		t.Fatalf("build should not fail for missing guidelines: %v", err)
+	_, err := builder.Build(tk)
+	if err == nil {
+		t.Fatal("build should fail for missing guidelines")
 	}
-
-	data, _ := os.ReadFile(filepath.Join(dir, "context.md"))
-	if !strings.Contains(string(data), "not found") {
-		t.Error("should contain 'not found' for missing guideline")
+	if !strings.Contains(err.Error(), "nonexistent") {
+		t.Errorf("error should mention the missing guideline name, got: %v", err)
 	}
 }

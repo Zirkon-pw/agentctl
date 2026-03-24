@@ -68,10 +68,9 @@ func (b *Builder) Build(t *task.Task) (string, error) {
 		for _, name := range t.Guidelines {
 			content, err := workspace.LoadGuideline(b.agentctlDir, name)
 			if err != nil {
-				sections = append(sections, fmt.Sprintf("## %s\n(not found: %v)", name, err))
-			} else {
-				sections = append(sections, fmt.Sprintf("## %s\n%s", name, content))
+				return "", fmt.Errorf("loading guideline %q: %w", name, err)
 			}
+			sections = append(sections, fmt.Sprintf("## %s\n%s", name, content))
 		}
 		sections = append(sections, "")
 	}
@@ -83,10 +82,9 @@ func (b *Builder) Build(t *task.Task) (string, error) {
 			fullPath := filepath.Join(b.projectRoot, path)
 			content, err := os.ReadFile(fullPath)
 			if err != nil {
-				sections = append(sections, fmt.Sprintf("## %s\n(error reading: %v)", path, err))
-			} else {
-				sections = append(sections, fmt.Sprintf("## %s\n```\n%s\n```", path, string(content)))
+				return "", fmt.Errorf("reading must-read file %q: %w", path, err)
 			}
+			sections = append(sections, fmt.Sprintf("## %s\n```\n%s\n```", path, string(content)))
 		}
 		sections = append(sections, "")
 	}
@@ -98,10 +96,9 @@ func (b *Builder) Build(t *task.Task) (string, error) {
 			fullPath := filepath.Join(b.projectRoot, path)
 			content, err := os.ReadFile(fullPath)
 			if err != nil {
-				sections = append(sections, fmt.Sprintf("## %s\n(error reading: %v)", path, err))
-			} else {
-				sections = append(sections, fmt.Sprintf("## %s\n```\n%s\n```", path, string(content)))
+				return "", fmt.Errorf("reading include file %q: %w", path, err)
 			}
+			sections = append(sections, fmt.Sprintf("## %s\n```\n%s\n```", path, string(content)))
 		}
 		sections = append(sections, "")
 	}

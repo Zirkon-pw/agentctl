@@ -2,6 +2,7 @@ package task
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -197,10 +198,13 @@ func followLogs(path string) error {
 		default:
 		}
 
-		n, _ := f.Read(buf)
+		n, readErr := f.Read(buf)
 		if n > 0 {
 			fmt.Print(string(buf[:n]))
 			continue
+		}
+		if readErr != nil && readErr != io.EOF {
+			return fmt.Errorf("reading log file: %w", readErr)
 		}
 
 		// No data available, wait briefly.

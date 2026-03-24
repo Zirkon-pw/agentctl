@@ -71,6 +71,9 @@ func (s TaskStatus) CanTransitionTo(target TaskStatus) bool {
 // ValidateTransition returns an error if the transition is not allowed.
 func (s TaskStatus) ValidateTransition(target TaskStatus) error {
 	if s == target {
+		if s.IsTerminal() {
+			return fmt.Errorf("task is already %s", s)
+		}
 		return nil
 	}
 	if !s.CanTransitionTo(target) {

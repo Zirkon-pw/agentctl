@@ -37,14 +37,14 @@ func TestCreateCmd_Flags(t *testing.T) {
 	}
 }
 
-func TestCreateCmd_AllowsEmptyDraft(t *testing.T) {
+func TestCreateCmd_RejectsEmptyDraft(t *testing.T) {
 	handler := setupCreateCmd(t)
 	cmd := NewCreateCmd(handler)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute: %v", err)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected error for empty draft (missing title and goal)")
 	}
 }
 

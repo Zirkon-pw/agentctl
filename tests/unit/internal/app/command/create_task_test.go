@@ -4,6 +4,7 @@ import (
 	. "github.com/docup/agentctl/internal/app/command"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -122,21 +123,24 @@ func TestCreateTask_Persisted(t *testing.T) {
 func TestCreateTask_EmptyDraft(t *testing.T) {
 	handler, _ := setupCreateTask(t)
 
-	tk, err := handler.Execute(dto.CreateTaskRequest{})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	_, err := handler.Execute(dto.CreateTaskRequest{})
+	if err == nil {
+		t.Fatal("expected error for empty draft (missing title)")
 	}
-	if tk.Title != "" {
-		t.Errorf("expected empty title, got %q", tk.Title)
+	if !strings.Contains(err.Error(), "title is required") {
+		t.Errorf("expected title-required error, got %v", err)
 	}
-	if tk.Goal != "" {
-		t.Errorf("expected empty goal, got %q", tk.Goal)
+}
+
+func TestCreateTask_MissingGoal(t *testing.T) {
+	handler, _ := setupCreateTask(t)
+
+	_, err := handler.Execute(dto.CreateTaskRequest{Title: "Test"})
+	if err == nil {
+		t.Fatal("expected error for missing goal")
 	}
-	if tk.Agent != "" {
-		t.Errorf("expected empty agent, got %q", tk.Agent)
-	}
-	if len(tk.PromptTemplates.Builtin) != 0 {
-		t.Errorf("expected no builtin templates, got %v", tk.PromptTemplates.Builtin)
+	if !strings.Contains(err.Error(), "goal is required") {
+		t.Errorf("expected goal-required error, got %v", err)
 	}
 }
 

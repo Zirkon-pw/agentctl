@@ -195,7 +195,9 @@ func (s *TaskStore) withLock(fn func() error) error {
 		return fmt.Errorf("locking task store: %w", err)
 	}
 	defer func() {
-		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		if unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); unlockErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to unlock task store: %v\n", unlockErr)
+		}
 	}()
 
 	return fn()

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"syscall"
 	"time"
 
 	rt "github.com/docup/agentctl/internal/core/runtime"
@@ -170,51 +171,74 @@ func (r *Registry) ClearSignal(taskID string) error {
 }
 
 func (r *Registry) upsertActiveRun(active rt.ActiveRun) error {
-	path := filepath.Join(r.baseDir, "active_runs.json")
-	var runs []rt.ActiveRun
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &runs)
-	}
-
-	replaced := false
-	for i := range runs {
-		if runs[i].TaskID == active.TaskID {
-			runs[i] = active
-			replaced = true
-			break
+	return r.withActiveRunsLock(func(runs []rt.ActiveRun) ([]rt.ActiveRun, error) {
+		replaced := false
+		for i := range runs {
+			if runs[i].TaskID == active.TaskID {
+				runs[i] = active
+				replaced = true
+				break
+			}
 		}
-	}
-	if !replaced {
-		runs = append(runs, active)
-	}
-
-	data, err := json.MarshalIndent(runs, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0644)
+		if !replaced {
+			runs = append(runs, active)
+		}
+		return runs, nil
+	})
 }
 
 func (r *Registry) removeFromActiveRuns(taskID, runID string) error {
+	return r.withActiveRunsLock(func(runs []rt.ActiveRun) ([]rt.ActiveRun, error) {
+		filtered := make([]rt.ActiveRun, 0, len(runs))
+		for _, active := range runs {
+			if active.TaskID == taskID {
+				if runID == "" || active.RunID == runID {
+					continue
+				}
+			}
+			filtered = append(filtered, active)
+		}
+		return filtered, nil
+	})
+}
+
+func (r *Registry) withActiveRunsLock(fn func([]rt.ActiveRun) ([]rt.ActiveRun, error)) error {
+	if err := os.MkdirAll(r.baseDir, 0755); err != nil {
+		return err
+	}
+	lockPath := filepath.Join(r.baseDir, ".active_runs.lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("opening active runs lock: %w", err)
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("locking active runs: %w", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
 	path := filepath.Join(r.baseDir, "active_runs.json")
 	var runs []rt.ActiveRun
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &runs)
 	}
-	filtered := runs[:0]
-	for _, active := range runs {
-		if active.TaskID == taskID {
-			if runID == "" || active.RunID == runID {
-				continue
-			}
-		}
-		filtered = append(filtered, active)
-	}
-	data, err := json.MarshalIndent(filtered, "", "  ")
+
+	result, err := fn(runs)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func splitLines(data []byte) [][]byte {

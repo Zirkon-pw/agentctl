@@ -167,6 +167,11 @@ func (s *TaskSupervisor) loadOrCreateSession(t *task.Task) (*rt.RunSession, erro
 		}
 	}
 
+	// Check for orphaned active runs and clean them up before creating a new session.
+	if active, err := s.registry.LoadActiveRun(t.ID); err == nil && active != nil {
+		s.registry.UnregisterRun(t.ID, active.RunID)
+	}
+
 	runID, err := s.runStore.NextRunID(t.ID)
 	if err != nil {
 		return nil, err

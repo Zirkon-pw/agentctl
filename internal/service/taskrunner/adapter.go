@@ -505,7 +505,11 @@ func parseQwenStructuredOutput(stdout string) (text string, sessionID string, lo
 		}
 	}
 
-	return stdout, "", "", nil, meta, nil
+	preview := trimmed
+	if len(preview) > 200 {
+		preview = preview[:200] + "..."
+	}
+	return "", "", "", nil, meta, fmt.Errorf("qwen output is not valid JSON and cannot be parsed: %s", preview)
 }
 
 func parseQwenJSONArray(data string) (string, string, qwenResultMeta, error) {
@@ -551,10 +555,19 @@ func collectQwenText(items []map[string]any) (string, string, qwenResultMeta, er
 		}
 		switch item["type"] {
 		case "assistant":
-			msg, _ := item["message"].(map[string]any)
-			content, _ := msg["content"].([]any)
+			msg, ok := item["message"].(map[string]any)
+			if !ok {
+				continue
+			}
+			content, ok := msg["content"].([]any)
+			if !ok {
+				continue
+			}
 			for _, block := range content {
-				blockMap, _ := block.(map[string]any)
+				blockMap, ok := block.(map[string]any)
+				if !ok {
+					continue
+				}
 				if blockMap["type"] == "text" {
 					if text, _ := blockMap["text"].(string); text != "" {
 						parts = append(parts, text)
