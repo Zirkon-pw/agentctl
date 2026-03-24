@@ -40,6 +40,11 @@ func (m *Manager) TaskEvents(taskID string, tail int) ([]rt.Event, error) {
 	return m.eventSink.Read(taskID)
 }
 
+// TaskEventsAfter returns events for a task after the given sequence cursor.
+func (m *Manager) TaskEventsAfter(taskID string, afterSeq int64, limit int) ([]rt.Event, error) {
+	return m.eventSink.ReadAfter(taskID, afterSeq, limit)
+}
+
 // TaskHeartbeat returns the heartbeat for a task and whether it's stale.
 func (m *Manager) TaskHeartbeat(taskID string) (*rt.Heartbeat, bool, error) {
 	hb, err := m.heartbeatMgr.Read(taskID)
@@ -56,12 +61,12 @@ func (m *Manager) IsRunning(taskID string) bool {
 
 // InspectInfo holds detailed information about a task's runtime state.
 type InspectInfo struct {
-	TaskID    string          `json:"task_id"`
-	IsRunning bool            `json:"is_running"`
-	Heartbeat *rt.Heartbeat   `json:"heartbeat,omitempty"`
-	IsStale   bool            `json:"is_stale"`
-	Events    []rt.Event      `json:"recent_events"`
-	ActiveRun *rt.ActiveRun   `json:"active_run,omitempty"`
+	TaskID    string        `json:"task_id"`
+	IsRunning bool          `json:"is_running"`
+	Heartbeat *rt.Heartbeat `json:"heartbeat,omitempty"`
+	IsStale   bool          `json:"is_stale"`
+	Events    []rt.Event    `json:"recent_events"`
+	ActiveRun *rt.ActiveRun `json:"active_run,omitempty"`
 }
 
 // Inspect returns detailed runtime info for a task.

@@ -66,6 +66,15 @@ func TestBuildPrompt_Basic(t *testing.T) {
 	if !strings.Contains(prompt, "go test") {
 		t.Error("should contain validation commands")
 	}
+	if strings.Contains(prompt, "Write execution artifacts under") {
+		t.Error("should not tell the agent to write artifacts into runtime directories")
+	}
+	if !strings.Contains(prompt, "Do NOT write files under .agentctl") {
+		t.Error("should explicitly forbid writing into .agentctl")
+	}
+	if !strings.Contains(prompt, "Do NOT create summary.md, diff.patch, or changed_files.json yourself") {
+		t.Error("should state that runtime-owned artifacts are generated automatically")
+	}
 
 	// Check template lock was written
 	lockPath := filepath.Join(runDir, "prompt_template_lock.yml")

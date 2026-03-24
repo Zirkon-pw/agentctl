@@ -15,6 +15,8 @@ import (
 // NewWatchCmd creates the task watch command.
 func NewWatchCmd(inspectQuery *query.InspectTask, rtMgr *runtimecontrol.Manager) *cobra.Command {
 	var interval int
+	var raw bool
+	var showThinking bool
 
 	cmd := &cobra.Command{
 		Use:   "watch <task-id>",
@@ -28,66 +30,69 @@ func NewWatchCmd(inspectQuery *query.InspectTask, rtMgr *runtimecontrol.Manager)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 			defer signal.Stop(sigCh)
 
-			fmt.Printf("Watching task %s (Ctrl+C to stop)\n\n", taskID)
+			fmt.Printf("Watching task %s (Ctrl+C to stop)\n", taskID)
+
+			if inspectQuery != nil {
+				if detail, err := inspectQuery.Execute(taskID); err == nil {
+					fmt.Printf("Task: %s | Status: %s | Agent: %s\n", detail.ID, detail.Status, detail.Agent)
+					if detail.LatestSession != nil {
+						sess := detail.LatestSession
+						fmt.Printf("Session: %s | Status: %s | Agent: %s\n", sess.ID, sess.Status, sess.Agent)
+						if sess.LastStageID != "" {
+							fmt.Printf("Last stage: %s (%s) — %s\n", sess.LastStageID, sess.LastStageType, sess.LastOutcome)
+						}
+					}
+				}
+			}
+
+			var lastSeq int64
+			if rtMgr != nil {
+				if existing, err := rtMgr.TaskEvents(taskID, 10); err == nil {
+					for _, ev := range existing {
+						if ev.Sequence > lastSeq {
+							lastSeq = ev.Sequence
+						}
+						line, ok := formatRuntimeEvent(ev, raw, showThinking)
+						if !ok {
+							continue
+						}
+						fmt.Println(line)
+					}
+				}
+			}
 
 			for {
 				select {
 				case <-sigCh:
 					fmt.Println("\nStopped watching.")
 					return nil
-				default:
+				case <-time.After(dur):
 				}
 
-				detail, err := inspectQuery.Execute(taskID)
-				if err != nil {
-					fmt.Printf("Error: %v\n", err)
-					time.Sleep(dur)
+				if rtMgr == nil {
 					continue
 				}
-
-				// Clear screen
-				fmt.Print("\033[2J\033[H")
-				fmt.Printf("Task: %s | Status: %s | Agent: %s\n", detail.ID, detail.Status, detail.Agent)
-				fmt.Printf("Title: %s\n", detail.Title)
-				fmt.Printf("Updated: %s\n\n", detail.UpdatedAt.Format("15:04:05"))
-
-				// Session info
-				if detail.LatestSession != nil {
-					sess := detail.LatestSession
-					fmt.Printf("Session: %s | Status: %s | Agent: %s\n", sess.ID, sess.Status, sess.Agent)
-					if sess.LastStageID != "" {
-						fmt.Printf("Last stage: %s (%s) — %s\n", sess.LastStageID, sess.LastStageType, sess.LastOutcome)
-					}
-					fmt.Println()
+				events, err := rtMgr.TaskEventsAfter(taskID, lastSeq, 0)
+				if err != nil {
+					fmt.Printf("watch error: %v\n", err)
+					continue
 				}
-
-				// Runtime
-				if rtMgr != nil {
-					info, err := rtMgr.Inspect(taskID)
-					if err == nil {
-						fmt.Printf("Running: %v | Stale: %v\n", info.IsRunning, info.IsStale)
-						if info.Heartbeat != nil {
-							fmt.Printf("Heartbeat: %s\n", info.Heartbeat.Timestamp.Format("15:04:05"))
-						}
-						fmt.Println("\nRecent events:")
-						for _, ev := range info.Events {
-							line := fmt.Sprintf("  [%s] %s", ev.Timestamp.Format("15:04:05"), ev.EventType)
-							if ev.StageID != "" {
-								line += fmt.Sprintf(" [%s]", ev.StageID)
-							}
-							if ev.Details != "" {
-								line += " — " + ev.Details
-							}
-							fmt.Println(line)
-						}
+				for _, ev := range events {
+					if ev.Sequence > lastSeq {
+						lastSeq = ev.Sequence
 					}
+					line, ok := formatRuntimeEvent(ev, raw, showThinking)
+					if !ok {
+						continue
+					}
+					fmt.Println(line)
 				}
-
-				time.Sleep(dur)
 			}
 		},
 	}
 
 	cmd.Flags().IntVar(&interval, "interval", 2, "Refresh interval in seconds")
+	cmd.Flags().BoolVar(&raw, "raw", false, "Show raw line events")
+	cmd.Flags().BoolVar(&showThinking, "show-thinking", false, "Show thinking events when available")
 	return cmd
 }

@@ -103,10 +103,10 @@ func buildContract(taskID, runID, agentctlDir string) string {
 	sb.WriteString(fmt.Sprintf("Execute task: %s/tasks/%s.yml\n", agentctlDir, taskID))
 	sb.WriteString(fmt.Sprintf("Context available in: %s/context/%s/\n", agentctlDir, taskID))
 	sb.WriteString(fmt.Sprintf("Prompt: %s/runs/%s/%s/prompt.md\n", agentctlDir, taskID, runID))
-	sb.WriteString(fmt.Sprintf("Save artifacts in: %s/runs/%s/%s/\n", agentctlDir, taskID, runID))
 	sb.WriteString("\nIMPORTANT: Read the prompt.md file for full instructions. ")
 	sb.WriteString("Read the task YAML for scope, constraints, and validation rules. ")
+	sb.WriteString("Modify only workspace files. ")
 	sb.WriteString("Do NOT modify any files inside .agentctl/. ")
-	sb.WriteString("Save your results (diff, summary, changed files list) into the artifacts directory.")
+	sb.WriteString("Do NOT create runtime-owned artifacts such as diff.patch, summary.md, or changed_files.json; the runtime generates them.")
 	return sb.String()
 }

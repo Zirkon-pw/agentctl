@@ -389,11 +389,11 @@ func (d *qwenDriver) BuildInvocation(profile loader.AgentDef, spec *rt.StageSpec
 	} else if len(session.StageHistory) > 0 {
 		args = append(args, "--continue")
 	}
-	args = append(args, "-p", prompt, "--output-format", "json", "--yolo")
+	args = append(args, "-p", prompt, "--output-format", "stream-json", "--yolo")
 	return &CLIInvocation{
 		Command:           profile.Command,
 		Args:              args,
-		StructuredLogName: "qwen.response.json",
+		StructuredLogName: "qwen.response.jsonl",
 	}, nil
 }
 

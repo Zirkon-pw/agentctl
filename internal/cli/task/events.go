@@ -11,6 +11,8 @@ import (
 func NewEventsCmd(rtMgr *runtimecontrol.Manager) *cobra.Command {
 	var tail int
 	var stageFilter string
+	var raw bool
+	var showThinking bool
 
 	cmd := &cobra.Command{
 		Use:   "events <task-id>",
@@ -33,19 +35,11 @@ func NewEventsCmd(rtMgr *runtimecontrol.Manager) *cobra.Command {
 				if stageFilter != "" && ev.StageID != stageFilter {
 					continue
 				}
-
-				ts := ev.Timestamp.Format("15:04:05")
-				parts := fmt.Sprintf("[%s] %s %s", ts, ev.RunID, ev.EventType)
-				if ev.StageID != "" {
-					parts += fmt.Sprintf(" [%s]", ev.StageID)
+				line, ok := formatRuntimeEvent(ev, raw, showThinking)
+				if !ok {
+					continue
 				}
-				if ev.AgentID != "" {
-					parts += fmt.Sprintf(" (%s)", ev.AgentID)
-				}
-				if ev.Details != "" {
-					parts += " — " + ev.Details
-				}
-				fmt.Println(parts)
+				fmt.Println(line)
 			}
 			return nil
 		},
@@ -53,5 +47,7 @@ func NewEventsCmd(rtMgr *runtimecontrol.Manager) *cobra.Command {
 
 	cmd.Flags().IntVar(&tail, "tail", 0, "Show last N events")
 	cmd.Flags().StringVar(&stageFilter, "stage", "", "Filter events by stage ID")
+	cmd.Flags().BoolVar(&raw, "raw", false, "Show raw line events")
+	cmd.Flags().BoolVar(&showThinking, "show-thinking", false, "Show thinking events when available")
 	return cmd
 }

@@ -191,7 +191,7 @@ func TestOrchestrator_Run_QwenDriverPersistsStructuredLogAndContinuationState(t 
 	if session.DriverState.ExternalSessionID != "qwen-session-1" {
 		t.Fatalf("expected qwen session id to be persisted, got %q", session.DriverState.ExternalSessionID)
 	}
-	structuredPath := filepath.Join(runStore.StageDir("TASK-001", session.ID, "STAGE-001"), "qwen.response.json")
+	structuredPath := filepath.Join(runStore.StageDir("TASK-001", session.ID, "STAGE-001"), "qwen.response.jsonl")
 	if _, err := os.Stat(structuredPath); err != nil {
 		t.Fatalf("expected qwen structured log: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestOrchestrator_Run_AppliesLiveRouteBeforeNextStage(t *testing.T) {
 }
 
 func TestOrchestrator_Run_QwenDriverCreatesLiveSessionAndProtocolLogs(t *testing.T) {
-	orch, store, runStore, registry, _ := setupOrchestrator(t, loader.AgentDriverQwen, qwenSlowWorkflowScript())
+	orch, store, runStore, registry, agentctlDir := setupOrchestrator(t, loader.AgentDriverQwen, qwenSlowWorkflowScript())
 	createDraftTask(store)
 
 	done := make(chan error, 1)
@@ -618,6 +618,35 @@ func TestOrchestrator_Run_QwenDriverCreatesLiveSessionAndProtocolLogs(t *testing
 	}
 	if !strings.Contains(string(protocolLog), "AGENTCTL_RESULT_BEGIN") {
 		t.Fatalf("expected structured result markers in protocol log, got %q", string(protocolLog))
+	}
+
+	eventSink := events.NewSink(filepath.Join(agentctlDir, "runtime"))
+	evs, err := eventSink.Read("TASK-001")
+	if err != nil {
+		t.Fatalf("read runtime events: %v", err)
+	}
+
+	hasProtocolLine := false
+	hasThinking := false
+	hasAgentMessage := false
+	hasToolCall := false
+	hasToolResult := false
+	for _, ev := range evs {
+		switch ev.EventType {
+		case "protocol_line":
+			hasProtocolLine = true
+		case "thinking":
+			hasThinking = true
+		case "agent_message":
+			hasAgentMessage = true
+		case "tool_call":
+			hasToolCall = true
+		case "tool_result":
+			hasToolResult = true
+		}
+	}
+	if !hasProtocolLine || !hasThinking || !hasAgentMessage || !hasToolCall || !hasToolResult {
+		t.Fatalf("expected live qwen events, got %+v", evs)
 	}
 }
 
@@ -666,6 +695,74 @@ func TestOrchestrator_Run_CapturesDiffForUntrackedFiles(t *testing.T) {
 	}
 }
 
+func TestOrchestrator_Run_FailsWhenAgentWritesIntoStageDir(t *testing.T) {
+	orch, store, runStore, _, agentctlDir := setupOrchestrator(t, loader.AgentDriverClaude, forbiddenRuntimeWriteWorkflowScript())
+	initGitRepo(t, filepath.Dir(agentctlDir))
+	createDraftTask(store)
+
+	if err := orch.Run(context.Background(), "TASK-001"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	tk, err := store.Load("TASK-001")
+	if err != nil {
+		t.Fatalf("load task: %v", err)
+	}
+	if tk.Status != task.StatusFailed {
+		t.Fatalf("expected failed task status, got %s", tk.Status)
+	}
+
+	session, err := runStore.LatestSession("TASK-001")
+	if err != nil {
+		t.Fatalf("latest session: %v", err)
+	}
+	last := session.LastStage()
+	if last == nil || last.Result == nil {
+		t.Fatalf("expected failed stage result, got %+v", session.StageHistory)
+	}
+	if !strings.Contains(last.Result.Message, "forbidden files under .agentctl") {
+		t.Fatalf("expected runtime violation message, got %+v", last.Result)
+	}
+
+	eventSink := events.NewSink(filepath.Join(agentctlDir, "runtime"))
+	evs, err := eventSink.Read("TASK-001")
+	if err != nil {
+		t.Fatalf("read runtime events: %v", err)
+	}
+	found := false
+	for _, ev := range evs {
+		if ev.EventType == "runtime_violation" && strings.Contains(ev.Details, "obsidian-customization-guide.md") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected runtime_violation event, got %+v", evs)
+	}
+}
+
+func TestOrchestrator_Run_FailsWhenAgentModifiesPrompt(t *testing.T) {
+	orch, store, runStore, _, agentctlDir := setupOrchestrator(t, loader.AgentDriverClaude, forbiddenPromptMutationWorkflowScript())
+	initGitRepo(t, filepath.Dir(agentctlDir))
+	createDraftTask(store)
+
+	if err := orch.Run(context.Background(), "TASK-001"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	session, err := runStore.LatestSession("TASK-001")
+	if err != nil {
+		t.Fatalf("latest session: %v", err)
+	}
+	last := session.LastStage()
+	if last == nil || last.Result == nil {
+		t.Fatalf("expected failed stage result, got %+v", session.StageHistory)
+	}
+	if !strings.Contains(last.Result.Message, "modified .agentctl/runs/TASK-001") {
+		t.Fatalf("expected prompt mutation to be reported, got %+v", last.Result)
+	}
+}
+
 func claudeWorkflowScript() string {
 	return `#!/bin/sh
 if [ "$AGENTCTL_STAGE_TYPE" = "review" ]; then
@@ -688,61 +785,30 @@ printf 'driver stderr\n' >&2
 func qwenWorkflowScript() string {
 	return `#!/bin/sh
 cat <<'EOF'
-[
-  {
-    "type":"system",
-    "session_id":"qwen-session-1"
-  },
-  {
-    "type":"assistant",
-    "session_id":"qwen-session-1",
-    "message":{
-      "content":[
-        {
-          "type":"text",
-          "text":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"# Summary\\nDone from qwen\"}\nAGENTCTL_RESULT_END"
-        }
-      ]
-    }
-  },
-  {
-    "type":"result",
-    "session_id":"qwen-session-1",
-    "result":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"# Summary\\nDone from qwen\"}\nAGENTCTL_RESULT_END"
-  }
-]
+{"type":"system","session_id":"qwen-session-1","subtype":"init"}
+{"type":"assistant","session_id":"qwen-session-1","message":{"content":[{"type":"text","text":"Done from qwen"}]}}
+{"type":"result","session_id":"qwen-session-1","result":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"# Summary\\nDone from qwen\"}\nAGENTCTL_RESULT_END"}
 EOF
 `
 }
 
 func qwenSlowWorkflowScript() string {
 	return `#!/bin/sh
+if [ "$AGENTCTL_STAGE_TYPE" = "review" ]; then
+printf '%s\n' '{"type":"system","session_id":"qwen-session-1","subtype":"init"}'
+printf '%s\n' '{"type":"assistant","session_id":"qwen-session-1","message":{"content":[{"type":"text","text":"Review completed"}]}}'
+printf '%s\n' '{"type":"result","session_id":"qwen-session-1","result":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"LGTM\",\"findings\":[]}\nAGENTCTL_RESULT_END"}'
+exit 0
+fi
+printf '%s\n' '{"type":"system","session_id":"qwen-session-1","subtype":"init"}'
 /bin/sleep 1
-cat <<'EOF'
-[
-  {
-    "type":"system",
-    "session_id":"qwen-session-1"
-  },
-  {
-    "type":"assistant",
-    "session_id":"qwen-session-1",
-    "message":{
-      "content":[
-        {
-          "type":"text",
-          "text":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"# Summary\\nDone from qwen slow\"}\nAGENTCTL_RESULT_END"
-        }
-      ]
-    }
-  },
-  {
-    "type":"result",
-    "session_id":"qwen-session-1",
-    "result":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"# Summary\\nDone from qwen slow\"}\nAGENTCTL_RESULT_END"
-  }
-]
-EOF
+printf '%s\n' '{"type":"assistant","session_id":"qwen-session-1","message":{"content":[{"type":"thinking","thinking":"reasoning about filesystem"}]}}'
+/bin/sleep 1
+printf '%s\n' '{"type":"assistant","session_id":"qwen-session-1","message":{"content":[{"type":"text","text":"I will create the file now"},{"type":"tool_use","id":"call_1","name":"write_file","input":{"file_path":"created.txt"}}]}}'
+/bin/sleep 1
+printf '%s\n' '{"type":"user","session_id":"qwen-session-1","content":[{"type":"tool_result","tool_use_id":"call_1","is_error":false,"content":"created created.txt"}]}'
+/bin/sleep 1
+printf '%s\n' '{"type":"result","session_id":"qwen-session-1","result":"AGENTCTL_RESULT_BEGIN\n{\"outcome\":\"completed\",\"summary\":\"# Summary\\nDone from qwen slow\"}\nAGENTCTL_RESULT_END"}'
 `
 }
 
@@ -783,6 +849,28 @@ printf '# Summary from agent\n' > summary.md
 cat <<'EOF'
 AGENTCTL_RESULT_BEGIN
 {"outcome":"completed","summary":"# Summary\nCreated untracked file"}
+AGENTCTL_RESULT_END
+EOF
+`
+}
+
+func forbiddenRuntimeWriteWorkflowScript() string {
+	return `#!/bin/sh
+printf 'bad write\n' > "$AGENTCTL_STAGE_DIR/obsidian-customization-guide.md"
+cat <<'EOF'
+AGENTCTL_RESULT_BEGIN
+{"outcome":"completed","summary":"# Summary\nWrote file into stage dir"}
+AGENTCTL_RESULT_END
+EOF
+`
+}
+
+func forbiddenPromptMutationWorkflowScript() string {
+	return `#!/bin/sh
+printf '\n# tampered\n' >> "$AGENTCTL_PROMPT_PATH"
+cat <<'EOF'
+AGENTCTL_RESULT_BEGIN
+{"outcome":"completed","summary":"# Summary\nTampered prompt"}
 AGENTCTL_RESULT_END
 EOF
 `

@@ -74,12 +74,11 @@ func (b *Builder) BuildPrompt(t *task.Task, contextDir, runDir string) (string, 
 
 	// Output expectations
 	sections = append(sections, "# Expected Output")
-	sections = append(sections, "Save the following artifacts:")
-	sections = append(sections, fmt.Sprintf("- Write execution artifacts under: %s", runDir))
-	sections = append(sections, "- Do not create summary.md, diff.patch, or changed_files.json in the project root.")
-	sections = append(sections, "- summary.md: Brief summary of changes made")
-	sections = append(sections, "- diff.patch: Unified diff of all code changes")
-	sections = append(sections, "- changed_files.json: JSON array of modified file paths")
+	sections = append(sections, "Execution contract:")
+	sections = append(sections, "- Create requested deliverables only inside the workspace/project directory (AGENTCTL_WORK_DIR).")
+	sections = append(sections, "- Do NOT write files under .agentctl or any runtime-managed path such as AGENTCTL_SESSION_DIR, AGENTCTL_STAGE_DIR, or AGENTCTL_CONTEXT_DIR.")
+	sections = append(sections, "- Do NOT create summary.md, diff.patch, or changed_files.json yourself. The runtime generates those artifacts automatically.")
+	sections = append(sections, "- Your responsibility is to make the required workspace changes and return the final structured result envelope.")
 
 	promptContent := strings.Join(sections, "\n")
 

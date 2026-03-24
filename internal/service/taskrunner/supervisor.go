@@ -460,6 +460,20 @@ func (s *TaskSupervisor) runAdapterStage(ctx context.Context, t *task.Task, sess
 	}
 	defer s.registry.UnregisterRun(t.ID, session.ID)
 
+	guardSnapshot, err := captureRuntimeGuardSnapshot(
+		spec,
+		runtimeErrLog,
+		stdoutLog,
+		stderrLog,
+		sessionLog,
+		protocolLog,
+		filepath.Join(spec.SessionDir, "session.json"),
+		filepath.Join(spec.SessionDir, "metadata.json"),
+	)
+	if err != nil {
+		return s.failStage(t, session, current, runtimeErrLog, fmt.Errorf("capturing runtime guard snapshot: %w", err), false)
+	}
+
 	// Emit enriched stage_started event.
 	s.eventSink.EmitEvent(rt.Event{
 		Timestamp: time.Now(),
@@ -513,6 +527,21 @@ func (s *TaskSupervisor) runAdapterStage(ctx context.Context, t *task.Task, sess
 				if err := appendFile(protocolLog, line+"\n"); err != nil {
 					_ = appendFile(runtimeErrLog, fmt.Sprintf("protocol log write error: %v\n", err))
 				}
+				rawEventType := "stdout_line"
+				if profile.Driver == loader.AgentDriverQwen {
+					rawEventType = "protocol_line"
+				}
+				_ = s.eventSink.EmitEvent(buildStageEvent(spec, rawEventType, line))
+				if profile.Driver == loader.AgentDriverQwen && strings.HasPrefix(strings.TrimSpace(line), "{") {
+					liveEvents, err := ParseQwenLiveEvents(spec, line)
+					if err != nil {
+						_ = appendFile(runtimeErrLog, fmt.Sprintf("qwen live parse error: %v\n", err))
+					} else {
+						for _, ev := range liveEvents {
+							_ = s.eventSink.EmitEvent(ev)
+						}
+					}
+				}
 			}
 			if !ok {
 				stdoutCh = nil
@@ -526,6 +555,7 @@ func (s *TaskSupervisor) runAdapterStage(ctx context.Context, t *task.Task, sess
 					_ = appendFile(runtimeErrLog, fmt.Sprintf("stderr log write error: %v\n", err))
 				}
 				_ = appendFile(sessionLog, fmt.Sprintf("[%s] [%s] [stderr] %s\n", time.Now().Format("15:04:05.000"), spec.StageID, line))
+				_ = s.eventSink.EmitEvent(buildStageEvent(spec, "stderr_line", line))
 			}
 			if !ok {
 				stderrCh = nil
@@ -593,6 +623,44 @@ func (s *TaskSupervisor) runAdapterStage(ctx context.Context, t *task.Task, sess
 			Details:   processErr.Error() + stageDuration,
 		})
 		return s.failStage(t, session, current, runtimeErrLog, stageProcessError(processErr), false)
+	}
+	violations, err := detectRuntimeViolations(guardSnapshot)
+	if err != nil {
+		s.eventSink.EmitEvent(rt.Event{
+			Timestamp: finished,
+			TaskID:    t.ID,
+			RunID:     session.ID,
+			SessionID: session.ID,
+			StageID:   spec.StageID,
+			AgentID:   spec.AgentID,
+			EventType: "stage_failed",
+			Details:   "runtime guard error: " + err.Error() + stageDuration,
+		})
+		return s.failStage(t, session, current, runtimeErrLog, fmt.Errorf("checking runtime guard: %w", err), false)
+	}
+	if len(violations) > 0 {
+		msg := fmt.Sprintf("agent wrote forbidden files under .agentctl: %s", strings.Join(violations, ", "))
+		s.eventSink.EmitEvent(rt.Event{
+			Timestamp: finished,
+			TaskID:    t.ID,
+			RunID:     session.ID,
+			SessionID: session.ID,
+			StageID:   spec.StageID,
+			AgentID:   spec.AgentID,
+			EventType: "runtime_violation",
+			Details:   strings.Join(violations, ", "),
+		})
+		s.eventSink.EmitEvent(rt.Event{
+			Timestamp: finished,
+			TaskID:    t.ID,
+			RunID:     session.ID,
+			SessionID: session.ID,
+			StageID:   spec.StageID,
+			AgentID:   spec.AgentID,
+			EventType: "stage_failed",
+			Details:   msg + stageDuration,
+		})
+		return s.failStage(t, session, current, runtimeErrLog, errors.New(msg), false)
 	}
 
 	parsed, err := driver.ParseStageOutput(spec, &StageCapture{

@@ -38,6 +38,9 @@ func TestSink_EmitAndRead(t *testing.T) {
 	if events[2].TaskID != "TASK-001" {
 		t.Errorf("wrong task ID: %s", events[2].TaskID)
 	}
+	if events[0].Sequence != 1 || events[1].Sequence != 2 || events[2].Sequence != 3 {
+		t.Fatalf("expected synthetic sequence numbers 1..3, got %+v", events)
+	}
 }
 
 func TestSink_Read_NoFile(t *testing.T) {
@@ -96,5 +99,25 @@ func TestSink_Tail_NoFile(t *testing.T) {
 	}
 	if events != nil {
 		t.Error("expected nil")
+	}
+}
+
+func TestSink_ReadAfter(t *testing.T) {
+	dir := tmpEventsDir(t)
+	sink := NewSink(dir)
+
+	for i := 0; i < 5; i++ {
+		sink.Emit("TASK-001", "RUN-001", "event", "")
+	}
+
+	events, err := sink.ReadAfter("TASK-001", 3, 0)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events after seq 3, got %d", len(events))
+	}
+	if events[0].Sequence != 4 || events[1].Sequence != 5 {
+		t.Fatalf("unexpected sequences: %+v", events)
 	}
 }

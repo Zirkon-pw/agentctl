@@ -131,4 +131,10 @@ func TestExecuteWithPromptFile_CreatesPromptAndPassesContract(t *testing.T) {
 			t.Fatalf("expected contract to contain %q, got %q", check, result.Stdout)
 		}
 	}
+	if strings.Contains(result.Stdout, "Save artifacts in") {
+		t.Fatalf("contract should not ask the agent to save artifacts in .agentctl, got %q", result.Stdout)
+	}
+	if !strings.Contains(result.Stdout, "Do NOT create runtime-owned artifacts") {
+		t.Fatalf("contract should mention runtime-owned artifacts, got %q", result.Stdout)
+	}
 }
